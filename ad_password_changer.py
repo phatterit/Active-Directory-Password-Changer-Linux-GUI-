@@ -2,6 +2,7 @@
 """
 Bezpieczny skrypt zmiany hasła Active Directory (GUI)
 Wersja produkcyjna - Multi-Language i18n (2026)
+Twórca: Paweł Kapeluszny "hatterp" & AI support
 """
 
 import tkinter as tk
