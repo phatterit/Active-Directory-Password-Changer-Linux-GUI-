@@ -1,0 +1,9 @@
+[Desktop Entry]
+Version=1.5
+Name=AD Admin Toolkit
+Comment=Zarządzanie Active Directory (Tryb Standardowy)
+Exec=/usr/bin/ad-admin-toolkit
+Icon=dialog-password
+Terminal=false
+Type=Application
+Categories=System;Settings;
