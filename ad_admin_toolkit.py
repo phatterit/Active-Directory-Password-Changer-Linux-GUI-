@@ -192,7 +192,7 @@ class ADAdminToolkit:
         banner.geometry("550x380")
         banner.resizable(False, False)
         banner.protocol("WM_DELETE_WINDOW", sys.exit)
-        banner.eval('tk::PlaceWindow . center')
+        self.root.eval(f'tk::PlaceWindow {banner} center')
         
         banner.transient(self.root)
         banner.grab_set()
