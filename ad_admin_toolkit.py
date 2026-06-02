@@ -4,7 +4,7 @@ AD Admin Toolkit (Linux GUI) - Wersja Korporacyjna v7.3 Final
 Moduły: Zmiana Hasła AD (LDAPS/NTLM), Diagnostyka, Banner Prawny, Eksport Logów
 Architektura: Extreme Security (Blue Team), OOP, i18n, Defensive Programming
 Wymagania: pip3 install ldap3
-Autor: hatterp (2026)
+Autor: hatterp && AI support (2026)
 """
 
 import tkinter as tk
@@ -36,6 +36,7 @@ except ImportError:
 # BEZPIECZNE CZYSZCZENIE PAMIĘCI (Best Effort w CPython)
 # -------------------------------------------------------------------------
 def secure_clear_string(s: str) -> None:
+    """Fizyczne zamazywanie pamięci kopii stringa."""
     if not isinstance(s, str) or not s:
         return
     try:
@@ -49,6 +50,7 @@ def secure_clear_string(s: str) -> None:
 
 
 def get_domain() -> str:
+    """Automatyczne wykrywanie domeny z SSSD / DNS."""
     try:
         res = subprocess.run(['realm', 'list'], capture_output=True, text=True, timeout=5)
         for line in res.stdout.splitlines():
@@ -61,7 +63,7 @@ def get_domain() -> str:
 
 
 # -------------------------------------------------------------------------
-# TŁUMACZENIA
+# TŁUMACZENIA (i18n)
 # -------------------------------------------------------------------------
 TRANSLATIONS = {
     "Polski": {
@@ -86,6 +88,8 @@ TRANSLATIONS = {
         "btn_kinit": "Pobierz bilet (kinit)",
         "btn_id": "Sprawdź uprawnienia (id)",
         "btn_logs": "Logi SSSD (journalctl)",
+        "btn_sss_config": "Sprawdź SSSD (config-check)",
+        "btn_sss_domain": "Status Domeny (domain-status)",
         "btn_copy_logs": "Kopiuj logi (Schowek)",
         "err_root": "Ta operacja systemowa wymaga uprawnień administratora (sudo)!",
         "pwd_weak": "Słabe",
@@ -124,6 +128,8 @@ TRANSLATIONS = {
         "btn_kinit": "Get ticket (kinit)",
         "btn_id": "Check permissions (id)",
         "btn_logs": "SSSD Logs (journalctl)",
+        "btn_sss_config": "SSSD Check (config-check)",
+        "btn_sss_domain": "Domain Status (domain-status)",
         "btn_copy_logs": "Copy logs (Clipboard)",
         "err_root": "This system operation requires administrator (sudo) privileges!",
         "pwd_weak": "Weak",
@@ -151,7 +157,6 @@ class ADAdminToolkit:
         self.root.resizable(False, False)
         self.root.eval('tk::PlaceWindow . center')
         
-        self.root.withdraw()
         self.current_lang = tk.StringVar(value="Polski")
         self.is_root = os.geteuid() == 0
         self.var_unlock = tk.BooleanVar(value=False)
@@ -170,7 +175,6 @@ class ADAdminToolkit:
         self.notebook.add(self.tab_pass, text="Zmiana hasła")
         self.notebook.add(self.tab_diag, text="Diagnostyka AD")
 
-        # Inicjalizacja kontrolek
         self.create_pass_tab()
         self.create_diag_tab()
         
@@ -235,11 +239,9 @@ class ADAdminToolkit:
     def toggle_read_only(self):
         state = "normal" if self.var_unlock.get() else "disabled"
         
-        # 1. Bezpieczne blokowanie przycisków
         for btn in getattr(self, 'buttons', {}).values():
             btn.config(state=state)
 
-        # 2. Bezpieczne odpytywanie o istnienie głównych kontrolek (brak AttributeError)
         widgets = [
             getattr(self, 'entry_login', None),
             getattr(self, 'entry_domain', None),
@@ -323,12 +325,12 @@ class ADAdminToolkit:
         self.btn_submit.grid(row=7, column=0, columnspan=3, pady=25, sticky=tk.EW, ipady=8)
 
     def evaluate_strength(self, event=None):
-        pwd = self.entry_new.get()
-        if not pwd:
-            self.lbl_strength.config(text="")
+        pwd = getattr(self, 'entry_new', None)
+        if not pwd or not pwd.get():
+            if hasattr(self, 'lbl_strength'): self.lbl_strength.config(text="")
             return
 
-        score = self._calculate_pwd_score(pwd)
+        score = self._calculate_pwd_score(pwd.get())
         if score <= 3:
             color, text = "#d90000", self._("pwd_weak")
         elif score <= 4:
@@ -336,7 +338,7 @@ class ADAdminToolkit:
         else:
             color, text = "#008000", self._("pwd_strong")
 
-        self.lbl_strength.config(text=text, fg=color)
+        if hasattr(self, 'lbl_strength'): self.lbl_strength.config(text=text, fg=color)
 
     def test_ldap_bind(self):
         domain = self.entry_domain.get().strip()
@@ -403,7 +405,6 @@ class ADAdminToolkit:
                     messagebox.showerror("Błąd logowania", "Nieprawidłowe dane logowania lub konto zostało zablokowane.")
                     return
 
-            # Bezpieczne pobranie struktury domeny (unikanie wyjątku)
             search_base = getattr(server.info, 'other', {}).get('defaultNamingContext', [None])[0]
             if not search_base:
                 messagebox.showerror("Błąd", "Nie można pobrać podstawowej struktury (Naming Context) domeny.")
@@ -471,6 +472,8 @@ class ADAdminToolkit:
             ("btn_id", self.run_id, False),
             ("btn_kinit", self.test_kinit, False),
             ("btn_logs", ["journalctl", "-u", "sssd", "-e", "--no-pager", "-n", "30"], True),
+            ("btn_sss_config", ["sssctl", "config-check"], True),
+            ("btn_sss_domain", self.run_domain_status, True),
         ]
 
         self.buttons = {}
@@ -495,19 +498,32 @@ class ADAdminToolkit:
         self.console = scrolledtext.ScrolledText(frame, height=14, bg="#101010", fg="#4af626", font=("Consolas", 10))
         self.console.pack(fill=tk.BOTH, expand=True)
 
+    def run_domain_status(self):
+        domain = getattr(self, 'entry_domain', None)
+        domain_name = domain.get().strip() if domain else get_domain()
+        
+        if not domain_name:
+            messagebox.showwarning("Brak domeny", "Wpisz domenę w zakładce zmiany hasła.")
+            return
+            
+        self.run_cli(["sssctl", "domain-status", domain_name], req_root=True)
+
     def copy_logs(self):
-        logs = self.console.get("1.0", tk.END).strip()
-        if logs:
+        logs = getattr(self, 'console', None)
+        if not logs: return
+        logs_text = logs.get("1.0", tk.END).strip()
+        if logs_text:
             self.root.clipboard_clear()
-            self.root.clipboard_append(logs)
+            self.root.clipboard_append(logs_text)
             self.root.update()
-            messagebox.showinfo("Schowek", "Logi zostały skopiowane! Możesz je teraz wkleić (np. Ctrl+V do AI).")
+            messagebox.showinfo("Schowek", "Logi zostały skopiowane do schowka.")
         else:
             messagebox.showwarning("Brak danych", "Konsola jest pusta, nie ma czego kopiować.")
 
     def log_to_console(self, text: str):
-        self.console.insert(tk.END, f"\n{text}\n{'─' * 70}\n")
-        self.console.see(tk.END)
+        if hasattr(self, 'console'):
+            self.console.insert(tk.END, f"\n{text}\n{'─' * 70}\n")
+            self.console.see(tk.END)
 
     def run_cli(self, cmd_list, req_root=False):
         if req_root and not self.is_root:
