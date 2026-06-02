@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-AD Admin Toolkit (Linux GUI) - Wersja Korporacyjna
-Moduły: Zmiana Hasła AD (LDAPS/NTLM), Diagnostyka, Banner Prawny
-Architektura: Extreme Security (Blue Team), OOP, i18n
+AD Admin Toolkit (Linux GUI) - Wersja Korporacyjna v7.3 Final
+Moduły: Zmiana Hasła AD (LDAPS/NTLM), Diagnostyka, Banner Prawny, Eksport Logów
+Architektura: Extreme Security (Blue Team), OOP, i18n, Defensive Programming
 Wymagania: pip3 install ldap3
 Autor: hatterp (2026)
 """
@@ -36,14 +36,9 @@ except ImportError:
 # BEZPIECZNE CZYSZCZENIE PAMIĘCI (Best Effort w CPython)
 # -------------------------------------------------------------------------
 def secure_clear_string(s: str) -> None:
-    """
-    Bezpieczne dla stabilności (Brak SegFault) próby czyszczenia kopii hasła.
-    W czystym Pythonie ostatecznie polegamy na usunięciu referencji i gc.collect().
-    """
     if not isinstance(s, str) or not s:
         return
     try:
-        # Nadpisanie losowymi bajtami (operuje na kopii, ale utrudnia odzysk)
         b = bytearray(s.encode('utf-8'))
         for _ in range(3):
             for i in range(len(b)):
@@ -91,6 +86,7 @@ TRANSLATIONS = {
         "btn_kinit": "Pobierz bilet (kinit)",
         "btn_id": "Sprawdź uprawnienia (id)",
         "btn_logs": "Logi SSSD (journalctl)",
+        "btn_copy_logs": "Kopiuj logi (Schowek)",
         "err_root": "Ta operacja systemowa wymaga uprawnień administratora (sudo)!",
         "pwd_weak": "Słabe",
         "pwd_fair": "Średnie",
@@ -128,6 +124,7 @@ TRANSLATIONS = {
         "btn_kinit": "Get ticket (kinit)",
         "btn_id": "Check permissions (id)",
         "btn_logs": "SSSD Logs (journalctl)",
+        "btn_copy_logs": "Copy logs (Clipboard)",
         "err_root": "This system operation requires administrator (sudo) privileges!",
         "pwd_weak": "Weak",
         "pwd_fair": "Fair",
@@ -173,7 +170,7 @@ class ADAdminToolkit:
         self.notebook.add(self.tab_pass, text="Zmiana hasła")
         self.notebook.add(self.tab_diag, text="Diagnostyka AD")
 
-        # INICJALIZACJA ZAKŁADEK (Musi nastąpić przed toggle_read_only)
+        # Inicjalizacja kontrolek
         self.create_pass_tab()
         self.create_diag_tab()
         
@@ -192,6 +189,7 @@ class ADAdminToolkit:
         banner.geometry("550x380")
         banner.resizable(False, False)
         banner.protocol("WM_DELETE_WINDOW", sys.exit)
+        
         self.root.eval(f'tk::PlaceWindow {banner} center')
         
         banner.transient(self.root)
@@ -232,22 +230,30 @@ class ADAdminToolkit:
         tk.OptionMenu(top_bar, self.current_lang, "Polski", "English", command=self.update_texts).pack(side=tk.RIGHT)
 
     # =========================================================================
-    # OBSŁUGA TRYBU READ-ONLY
+    # OBSŁUGA TRYBU READ-ONLY (Defensive Programming)
     # =========================================================================
     def toggle_read_only(self):
         state = "normal" if self.var_unlock.get() else "disabled"
         
-        widgets_to_toggle = [
-            self.entry_login, self.entry_domain, self.entry_old, 
-            self.entry_new, self.entry_confirm, self.btn_submit,
-            self.entry_diag_target, self.entry_diag_pwd
-        ]
-        
-        for btn in self.buttons.values():
+        # 1. Bezpieczne blokowanie przycisków
+        for btn in getattr(self, 'buttons', {}).values():
             btn.config(state=state)
 
-        for widget in widgets_to_toggle:
-            widget.config(state=state)
+        # 2. Bezpieczne odpytywanie o istnienie głównych kontrolek (brak AttributeError)
+        widgets = [
+            getattr(self, 'entry_login', None),
+            getattr(self, 'entry_domain', None),
+            getattr(self, 'entry_old', None),
+            getattr(self, 'entry_new', None),
+            getattr(self, 'entry_confirm', None),
+            getattr(self, 'btn_submit', None),
+            getattr(self, 'entry_diag_target', None),
+            getattr(self, 'entry_diag_pwd', None)
+        ]
+        
+        for widget in widgets:
+            if widget is not None:
+                widget.config(state=state)
 
     def _calculate_pwd_score(self, pwd: str) -> int:
         if not pwd: return 0
@@ -261,10 +267,10 @@ class ADAdminToolkit:
         return score
 
     def clear_password_fields(self):
-        self.entry_old.delete(0, tk.END)
-        self.entry_new.delete(0, tk.END)
-        self.entry_confirm.delete(0, tk.END)
-        self.lbl_strength.config(text="")
+        if hasattr(self, 'entry_old'): self.entry_old.delete(0, tk.END)
+        if hasattr(self, 'entry_new'): self.entry_new.delete(0, tk.END)
+        if hasattr(self, 'entry_confirm'): self.entry_confirm.delete(0, tk.END)
+        if hasattr(self, 'lbl_strength'): self.lbl_strength.config(text="")
         self.root.update()
 
     # =========================================================================
@@ -333,7 +339,6 @@ class ADAdminToolkit:
         self.lbl_strength.config(text=text, fg=color)
 
     def test_ldap_bind(self):
-        """Sprawdza porty 636 i 389 unikając tworzenia logów o Anonymous Bind w AD."""
         domain = self.entry_domain.get().strip()
         if not domain:
             messagebox.showwarning("Błąd", "Wprowadź domenę")
@@ -388,20 +393,18 @@ class ADAdminToolkit:
 
             upn = f"{user}@{domain}"
             
-            # Próba LDAPS (Port 636, NTLM)
             server = Server(domain, use_ssl=True, get_info=ALL, connect_timeout=6)
             conn = Connection(server, user=upn, password=old_pwd, authentication=NTLM)
             
             if not conn.bind():
-                # Fallback do zwykłego LDAP (Port 389, NTLM)
                 server = Server(domain, use_ssl=False, get_info=ALL, connect_timeout=6)
                 conn = Connection(server, user=upn, password=old_pwd, authentication=NTLM)
                 if not conn.bind():
                     messagebox.showerror("Błąd logowania", "Nieprawidłowe dane logowania lub konto zostało zablokowane.")
                     return
 
-            # Zabezpieczenie przed brakiem struktury domeny w obiekcie serwera
-            search_base = server.info.other.get('defaultNamingContext', [None])[0]
+            # Bezpieczne pobranie struktury domeny (unikanie wyjątku)
+            search_base = getattr(server.info, 'other', {}).get('defaultNamingContext', [None])[0]
             if not search_base:
                 messagebox.showerror("Błąd", "Nie można pobrać podstawowej struktury (Naming Context) domeny.")
                 return
@@ -435,7 +438,7 @@ class ADAdminToolkit:
             gc.collect()
 
     # =========================================================================
-    # DIAGNOSTYKA
+    # DIAGNOSTYKA I EKSPORT LOGÓW
     # =========================================================================
     def create_diag_tab(self):
         frame = tk.Frame(self.tab_diag, padx=15, pady=15)
@@ -481,9 +484,26 @@ class ADAdminToolkit:
             btn.grid(row=i//2, column=i%2, sticky=tk.EW, padx=4, pady=3)
             self.buttons[text_key] = btn
 
-        tk.Label(frame, text="Konsola wyników:", font=("Arial", 9, "italic")).pack(anchor=tk.W, pady=(15, 2))
+        console_top = tk.Frame(frame)
+        console_top.pack(fill=tk.X, pady=(15, 2))
+        
+        tk.Label(console_top, text="Konsola wyników:", font=("Arial", 9, "italic")).pack(side=tk.LEFT)
+        
+        self.btn_copy = tk.Button(console_top, font=("Arial", 8, "bold"), command=self.copy_logs, bg="#e0e0e0")
+        self.btn_copy.pack(side=tk.RIGHT)
+
         self.console = scrolledtext.ScrolledText(frame, height=14, bg="#101010", fg="#4af626", font=("Consolas", 10))
         self.console.pack(fill=tk.BOTH, expand=True)
+
+    def copy_logs(self):
+        logs = self.console.get("1.0", tk.END).strip()
+        if logs:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(logs)
+            self.root.update()
+            messagebox.showinfo("Schowek", "Logi zostały skopiowane! Możesz je teraz wkleić (np. Ctrl+V do AI).")
+        else:
+            messagebox.showwarning("Brak danych", "Konsola jest pusta, nie ma czego kopiować.")
 
     def log_to_console(self, text: str):
         self.console.insert(tk.END, f"\n{text}\n{'─' * 70}\n")
@@ -547,23 +567,26 @@ class ADAdminToolkit:
     # INTENACJONALIZACJA (i18n)
     # =========================================================================
     def update_texts(self, *args):
-        self.notebook.tab(self.tab_pass, text=self._("tab_pass"))
-        self.notebook.tab(self.tab_diag, text=self._("tab_diag"))
+        if hasattr(self, 'notebook'):
+            self.notebook.tab(self.tab_pass, text=self._("tab_pass"))
+            self.notebook.tab(self.tab_diag, text=self._("tab_diag"))
 
-        self.chk_unlock.config(text=self._("chk_unlock"))
-        self.lbl_old.config(text=self._("old_pwd"))
-        self.lbl_new.config(text=self._("new_pwd"))
-        self.lbl_confirm.config(text=self._("confirm_pwd"))
-        self.btn_submit.config(text=self._("btn_submit"))
-        self.btn_test.config(text=self._("btn_test"))
-        self.lbl_diag_target.config(text=self._("diag_target"))
-        self.lbl_diag_pwd.config(text=self._("diag_pwd"))
+        if hasattr(self, 'chk_unlock'): self.chk_unlock.config(text=self._("chk_unlock"))
+        if hasattr(self, 'lbl_old'): self.lbl_old.config(text=self._("old_pwd"))
+        if hasattr(self, 'lbl_new'): self.lbl_new.config(text=self._("new_pwd"))
+        if hasattr(self, 'lbl_confirm'): self.lbl_confirm.config(text=self._("confirm_pwd"))
+        if hasattr(self, 'btn_submit'): self.btn_submit.config(text=self._("btn_submit"))
+        if hasattr(self, 'btn_test'): self.btn_test.config(text=self._("btn_test"))
+        if hasattr(self, 'lbl_diag_target'): self.lbl_diag_target.config(text=self._("diag_target"))
+        if hasattr(self, 'lbl_diag_pwd'): self.lbl_diag_pwd.config(text=self._("diag_pwd"))
+        if hasattr(self, 'btn_copy'): self.btn_copy.config(text=self._("btn_copy_logs"))
 
         for key, btn in getattr(self, 'buttons', {}).items():
             if key in TRANSLATIONS["Polski"]:
                 btn.config(text=self._(key))
 
-        self.evaluate_strength()
+        if hasattr(self, 'entry_new'):
+            self.evaluate_strength()
 
 
 if __name__ == "__main__":
